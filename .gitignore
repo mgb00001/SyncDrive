@@ -1,0 +1,23 @@
+# Go
+bin/
+*.exe
+!ui/src-tauri/binaries/*.exe
+
+# Frontend
+ui/node_modules/
+ui/dist/
+
+# Tauri / Rust
+ui/src-tauri/target/
+ui/src-tauri/gen/
+ui/src-tauri/binaries/
+
+# Local data & secrets — OAuth client secrets must NEVER be committed
+*.db
+*.db-wal
+*.db-shm
+client_secret*.json
+credentials.json
+
+# Personal editor/agent settings
+.claude/settings.local.json
