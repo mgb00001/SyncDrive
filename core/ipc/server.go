@@ -31,6 +31,9 @@ type Daemon interface {
 	// Restore pulls a holding-tank file back; serialized against sync
 	// passes by the daemon. Returns the restored relative path.
 	Restore(ctx context.Context, fileID string) (string, error)
+	// PurgeTrash permanently deletes holding-tank entries early (one file,
+	// or all when fileID is empty). Returns the purge count.
+	PurgeTrash(ctx context.Context, fileID string) (int, error)
 	// TokenLifetimeDays is the refresh-token lifetime used for expiry
 	// warnings; 0 disables them (production OAuth client).
 	TokenLifetimeDays() int
@@ -83,6 +86,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/folders", s.handleRemoveFolder)
 	mux.HandleFunc("GET /api/trash", s.handleListTrash)
 	mux.HandleFunc("POST /api/trash/restore", s.handleRestore)
+	mux.HandleFunc("POST /api/trash/purge", s.handlePurge)
 	mux.HandleFunc("GET /api/accounts", s.handleListAccounts)
 	mux.HandleFunc("POST /api/accounts", s.handleAddAccount)
 	mux.HandleFunc("POST /api/share/user", s.handleShareUser)
@@ -252,6 +256,21 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"restored": restored})
+}
+
+func (s *Server) handlePurge(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FileID string `json:"file_id"` // empty = empty the whole holding tank
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	n, err := s.daemon.PurgeTrash(r.Context(), req.FileID)
+	if err != nil {
+		httpErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]int{"purged": n})
 }
 
 func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {

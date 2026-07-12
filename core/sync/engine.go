@@ -2,7 +2,10 @@ package sync
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -255,8 +258,12 @@ func (e *Engine) buildChainTasks(ctx context.Context, chain []db.FolderTarget,
 		})
 	}
 
-	// Pass 2: brand-new local files, in deterministic order, each routed by
-	// remaining headroom.
+	// Pass 2: brand-new local files, in deterministic order. Before spending
+	// upload budget, look for an existing remote twin anywhere in the chain:
+	// a same-path remote file with identical content (MD5) is ADOPTED —
+	// tracking state is rebuilt with zero bytes transferred (recovers from
+	// database loss/reinstall); same-path different-content is updated in
+	// place on its relation (local is law, and updating avoids duplicates).
 	newPaths := make([]string, 0)
 	for p := range paths {
 		if _, owned := ownerByPath[p]; owned {
@@ -270,16 +277,34 @@ func (e *Engine) buildChainTasks(ctx context.Context, chain []db.FolderTarget,
 	for _, p := range newPaths {
 		l := local[p]
 		ls := &l
-		relID := assignRelID(ls.Size)
-		if relID == 0 {
-			slog.Warn("no account has capacity above the free-space reserve; file deferred",
-				"path", p, "size", ls.Size)
-			continue // stays untracked; retried next pass
+
+		var relID int64
+		var rs *RemoteState
+		action := ActionUpload
+
+		if twinRel, twin := findRemoteTwin(chain, remoteByRel, p); twin != nil {
+			localMD5, err := fileMD5(filepath.Join(chain[0].LocalRootPath, filepath.FromSlash(p)))
+			if err == nil && localMD5 == twin.MD5 && twin.MD5 != "" {
+				action = ActionAdopt // identical content: no transfer needed
+			} else if e.Space != nil {
+				// Same name, different content: in-place update on the
+				// owning relation; only the growth hits the headroom.
+				e.Space.Consume(accountByRel[twinRel], maxInt64(0, ls.Size-twin.Size))
+			}
+			relID = twinRel
+			rs = twin
+		} else {
+			relID = assignRelID(ls.Size)
+			if relID == 0 {
+				slog.Warn("no account has capacity above the free-space reserve; file deferred",
+					"path", p, "size", ls.Size)
+				continue // stays untracked; retried next pass
+			}
+			rs, _ = pickRemote(remoteByRel[relID][p], nil)
 		}
-		rs, _ := pickRemote(remoteByRel[relID][p], nil)
-		action := Merge(ls, rs, nil)
-		if action == ActionNone {
-			continue
+
+		if action == ActionAdopt {
+			slog.Info("adopting existing remote file", "path", p, "relation", relID)
 		}
 		tasks = append(tasks, Task{
 			RelationID:   relID,
@@ -290,6 +315,28 @@ func (e *Engine) buildChainTasks(ctx context.Context, chain []db.FolderTarget,
 		})
 	}
 	return tasks, chain, nil
+}
+
+// findRemoteTwin looks across every chain relation's remote listing for an
+// object at the given path, preferring one whose content hash matches — the
+// adoption candidate after a tracking-state loss.
+func findRemoteTwin(chain []db.FolderTarget, remoteByRel map[int64]map[string][]drive.RemoteFile, p string) (int64, *RemoteState) {
+	for _, t := range chain {
+		cands := remoteByRel[t.ID][p]
+		if len(cands) == 0 {
+			continue
+		}
+		c := cands[0]
+		return t.ID, &RemoteState{ID: c.ID, MD5: c.MD5, Size: c.Size}
+	}
+	return 0, nil
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // pickRemote selects the tracked object among same-named remote candidates
@@ -320,6 +367,21 @@ func pickRemote(cands []drive.RemoteFile, base *BaseState) (*RemoteState, []driv
 		}
 	}
 	return &RemoteState{ID: chosen.ID, MD5: chosen.MD5, Size: chosen.Size}, dupes
+}
+
+// fileMD5 hashes a local file with MD5 — the checksum Drive publishes for
+// binary content, used to detect adoptable remote twins.
+func fileMD5(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := md5.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // scanLocal walks the mirrored root and returns file states keyed by
@@ -388,8 +450,36 @@ func (x *driveExecutor) Execute(ctx context.Context, t Task) error {
 		return x.trash(ctx, t)
 	case ActionDedupe:
 		return x.dedupe(ctx, t)
+	case ActionAdopt:
+		return x.adopt(ctx, t)
 	}
 	return nil
+}
+
+// adopt records an existing identical remote file as this local file's
+// mirror — no bytes are transferred.
+func (x *driveExecutor) adopt(ctx context.Context, t Task) error {
+	target, _, err := x.resolve(t.RelationID)
+	if err != nil {
+		return err
+	}
+	if t.Remote == nil {
+		return fmt.Errorf("adopt task without remote state")
+	}
+	localPath := filepath.Join(target.LocalRootPath, filepath.FromSlash(t.RelativePath))
+	fi, err := os.Stat(localPath)
+	if err != nil {
+		return fmt.Errorf("stat for adoption: %w", err)
+	}
+	return x.store.UpsertFile(db.FileMeta{
+		RelationID:   t.RelationID,
+		RelativePath: t.RelativePath,
+		LocalMtime:   fi.ModTime(),
+		LocalSize:    fi.Size(),
+		RemoteID:     t.Remote.ID,
+		RemoteMD5:    t.Remote.MD5,
+		Status:       db.StatusSynced,
+	})
 }
 
 // dedupe sweeps a redundant same-content duplicate into the holding-tank

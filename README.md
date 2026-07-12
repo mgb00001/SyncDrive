@@ -13,7 +13,11 @@ multi-account spillover stress test.
 - **Smart space management** — when an account drops below 20% free space,
   new files automatically spill over to the next connected Google account.
 - **30-day deletion holding tank** — local deletions are quarantined in a
-  hidden Drive folder and restorable for 30 days (per-folder configurable).
+  hidden Drive folder and restorable for 30 days (per-folder configurable);
+  files can also be purged early from the app to free cloud space now.
+- **Adoption** — after a database loss, reinstall, or machine move, local
+  files that byte-match existing remote files (MD5) are re-linked with zero
+  re-uploading.
 - **Explorer panel** — browse your local drives with per-file sync status
   dots and one-click mirroring of any folder.
 - **Credential expiry warnings** — Testing-mode OAuth tokens expire after
@@ -50,7 +54,7 @@ multi-account spillover stress test.
 | `core/share` | PC-to-PC (`writer` permission) and public-link (`anyone`/`reader`) sharing |
 | `core/ipc` | Loopback JSON API consumed by the UI (status, folders, trash, accounts, sharing, filesystem browse) |
 | `core/cmd/syncdrived` | Daemon entrypoint |
-| `core/cmd/dbdump`, `core/cmd/drivels` | Diagnostic tools: dump sync state / raw-list a Drive folder |
+| `core/cmd/dbdump`, `core/cmd/drivels`, `core/cmd/driverm` | Diagnostic tools: dump sync state / raw-list a Drive folder / permanently delete a Drive object |
 | `ui` | Tauri 2 + React + Tailwind frontend (daemon bundled as sidecar) |
 | `syncdrive-start.bat` / `syncdrive-stop.bat` | Windows service-style start/stop scripts |
 | `stress-test.bat` | 30 x 1GB overnight spillover stress test |
@@ -61,8 +65,10 @@ multi-account spillover stress test.
 |---|---|---|
 | new/modified | — | uploaded to **all** mapped targets |
 | unchanged | deleted or tampered via drive.google.com | automatically **re-uploaded** |
-| deleted | anything | moved to hidden `.crosssync_trash/` holding tank; permanently deleted after the holding period (default 30 days); restorable any time before that |
+| deleted | anything | moved to hidden `.crosssync_trash/` holding tank; permanently deleted after the holding period (default 30 days); restorable — or purgeable early — any time before that |
 | modified | modified | local wins, row flagged `CONFLICT` in the UI |
+| untracked (e.g. after DB loss) | identical content (MD5 match) | **adopted** — tracking rebuilt, nothing transferred |
+| untracked | same name, different content | remote object updated in place (no duplicates) |
 
 Incoming shares never land executables directly: `.exe`, `.sh`, `.bat`, `.ps1`,
 `.msi`, … are routed straight to the holding tank.

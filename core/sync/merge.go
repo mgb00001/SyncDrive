@@ -51,6 +51,10 @@ const (
 	// ActionDedupe: a redundant remote duplicate (same name, identical
 	// content hash) is swept into the holding-tank folder.
 	ActionDedupe
+	// ActionAdopt: an untracked local file matches an existing remote file
+	// byte-for-byte (MD5) — record the pairing without uploading anything.
+	// This rebuilds tracking state after a database loss or reinstall.
+	ActionAdopt
 )
 
 func (a Action) String() string {
@@ -67,6 +71,8 @@ func (a Action) String() string {
 		return "CONFLICT"
 	case ActionDedupe:
 		return "DEDUPE"
+	case ActionAdopt:
+		return "ADOPT"
 	}
 	return "UNKNOWN"
 }

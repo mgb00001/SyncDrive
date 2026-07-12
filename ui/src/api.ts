@@ -82,6 +82,8 @@ export const api = {
   trash: () => req<TrashedFile[]>("/api/trash"),
   restore: (file_id: string) =>
     req("/api/trash/restore", { method: "POST", body: JSON.stringify({ file_id }) }),
+  purge: (file_id?: string) =>
+    req<{ purged: number }>("/api/trash/purge", { method: "POST", body: JSON.stringify({ file_id: file_id ?? "" }) }),
   accounts: () => req<AccountView[]>("/api/accounts"),
   browse: (path?: string) => req<BrowseResponse>(`/api/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addAccount: () => req<{ email: string }>("/api/accounts", { method: "POST" }),

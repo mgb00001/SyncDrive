@@ -363,6 +363,54 @@ func (d *daemon) Restore(ctx context.Context, fileID string) (string, error) {
 	return "", fmt.Errorf("file not found in holding tank")
 }
 
+// PurgeTrash permanently deletes holding-tank entries ahead of their
+// retention deadline — one entry when fileID is set, the whole tank when
+// empty. Serialized with sync passes. Returns how many were purged.
+func (d *daemon) PurgeTrash(ctx context.Context, fileID string) (int, error) {
+	d.syncMu.Lock()
+	defer d.syncMu.Unlock()
+	trashed, err := d.store.ListTrashed()
+	if err != nil {
+		return 0, err
+	}
+	targets, err := d.store.AllTargets()
+	if err != nil {
+		return 0, err
+	}
+	accountByRel := map[int64]string{}
+	for _, t := range targets {
+		accountByRel[t.ID] = t.GoogleAccountID
+	}
+	purged := 0
+	for _, f := range trashed {
+		if fileID != "" && f.ID != fileID {
+			continue
+		}
+		d.mu.Lock()
+		client := d.clients[accountByRel[f.RelationID]]
+		d.mu.Unlock()
+		if client == nil {
+			slog.Warn("purge: account not authenticated, skipping", "path", f.RelativePath)
+			continue
+		}
+		if f.RemoteID != "" {
+			if err := client.PermanentDelete(ctx, f.RemoteID); err != nil {
+				slog.Warn("purge: permanent delete failed", "path", f.RelativePath, "err", err)
+				continue
+			}
+		}
+		if err := d.store.DeleteFileRow(f.ID); err != nil {
+			return purged, err
+		}
+		purged++
+		slog.Info("purged from holding tank", "path", f.RelativePath)
+	}
+	if fileID != "" && purged == 0 {
+		return 0, fmt.Errorf("file not found in holding tank")
+	}
+	return purged, nil
+}
+
 // syncAll runs one reconciliation pass over every unpaused relation.
 func (d *daemon) syncAll(ctx context.Context) {
 	d.syncMu.Lock()

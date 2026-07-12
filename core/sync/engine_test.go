@@ -2,6 +2,8 @@ package sync
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -231,6 +233,67 @@ func TestSyncRelationFlagsConcurrentEditConflict(t *testing.T) {
 	after, _ := store.GetFile(target.ID, "shared.txt")
 	if after.Status != db.StatusConflict {
 		t.Fatalf("status = %s, want CONFLICT", after.Status)
+	}
+}
+
+// TestEngineAdoptsIdenticalRemoteAfterStateLoss simulates a lost tracking
+// database: local files exist, identical remote files exist, no rows. The
+// engine must rebuild state by adoption — zero uploads.
+func TestEngineAdoptsIdenticalRemoteAfterStateLoss(t *testing.T) {
+	eng, store, ops, target, root := newEngineFixture(t)
+
+	content := "survived the database loss"
+	mustWrite(t, filepath.Join(root, "doc.txt"), content)
+	sum := md5.Sum([]byte(content))
+	realMD5 := hex.EncodeToString(sum[:])
+
+	// Remote twin exists (same path, same content hash); no base rows.
+	ops.remoteLst = map[string][]drive.RemoteFile{
+		"doc.txt": {{ID: "remote-doc", MD5: realMD5, Size: int64(len(content))}},
+	}
+
+	if err := eng.SyncChain(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	if len(ops.uploads) != 0 {
+		t.Fatalf("adoption must transfer nothing, but uploaded %v", ops.uploads)
+	}
+	m, err := store.GetFile(target.ID, "doc.txt")
+	if err != nil || m == nil {
+		t.Fatalf("adopted row missing: %v", err)
+	}
+	if m.RemoteID != "remote-doc" || m.RemoteMD5 != realMD5 || m.Status != db.StatusSynced {
+		t.Fatalf("adopted row = %+v", m)
+	}
+
+	// Next pass must be a clean no-op.
+	if err := eng.SyncChain(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	if len(ops.uploads) != 0 {
+		t.Fatalf("post-adoption pass re-uploaded %v", ops.uploads)
+	}
+}
+
+func TestEngineUpdatesInPlaceWhenRemoteTwinContentDiffers(t *testing.T) {
+	eng, store, ops, target, root := newEngineFixture(t)
+
+	mustWrite(t, filepath.Join(root, "doc.txt"), "local version wins")
+	// Same-named remote file with DIFFERENT content: local is law — update
+	// that object in place rather than creating a duplicate.
+	ops.remoteLst = map[string][]drive.RemoteFile{
+		"doc.txt": {{ID: "remote-stale", MD5: "different-hash", Size: 5}},
+	}
+
+	if err := eng.SyncChain(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	if len(ops.uploads) != 1 || ops.uploads[0] != "doc.txt" {
+		t.Fatalf("uploads = %v, want [doc.txt]", ops.uploads)
+	}
+	m, _ := store.GetFile(target.ID, "doc.txt")
+	if m == nil || m.RemoteID != "remote-stale" {
+		t.Fatalf("expected in-place update of remote-stale, got %+v", m)
 	}
 }
 

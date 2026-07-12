@@ -31,14 +31,56 @@ export default function Trash() {
     }
   };
 
+  const purgeOne = async (f: TrashedFile) => {
+    if (!confirm(`Permanently delete "${f.RelativePath}" from the cloud now?\nThis cannot be undone.`)) return;
+    setBusy(f.ID);
+    setError("");
+    try {
+      await api.purge(f.ID);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const purgeAll = async () => {
+    if (!confirm(`Permanently delete ALL ${items.length} file(s) in the holding tank now?\nThis cannot be undone.`))
+      return;
+    setBusy("*");
+    setError("");
+    try {
+      const r = await api.purge();
+      await load();
+      if (r.purged < items.length) {
+        setError(`Purged ${r.purged} of ${items.length} — some accounts may need to be reconnected.`);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader title="Deletion holding tank" />
+        <CardHeader
+          title="Deletion holding tank"
+          action={
+            items.length > 0 ? (
+              <Button variant="destructive" disabled={busy === "*"} onClick={purgeAll}>
+                {busy === "*" ? "Emptying…" : "Empty holding tank"}
+              </Button>
+            ) : undefined
+          }
+        />
         <div className="p-4 space-y-2">
           <p className="text-sm text-zinc-500">
             Files deleted locally are kept in a hidden cloud folder for the holding period (default 30 days) before
-            being permanently removed. Restore pulls the file back to its original local location.
+            being permanently removed. Restore pulls a file back to its original local location; Delete now frees the
+            cloud space immediately.
           </p>
           {error && <p className="text-sm text-red-600">{error}</p>}
           {items.length === 0 && <p className="text-sm text-zinc-500">The holding tank is empty.</p>}
@@ -49,9 +91,12 @@ export default function Trash() {
             >
               <span className="font-medium truncate">{f.RelativePath}</span>
               <Badge tone={daysLeft(f.DeletedAt) <= 5 ? "red" : "amber"}>{daysLeft(f.DeletedAt)} days left</Badge>
-              <span className="ml-auto">
+              <span className="ml-auto flex gap-2">
                 <Button variant="outline" disabled={busy === f.ID} onClick={() => restore(f.ID)}>
-                  {busy === f.ID ? "Restoring…" : "Restore"}
+                  {busy === f.ID ? "…" : "Restore"}
+                </Button>
+                <Button variant="destructive" disabled={busy === f.ID} onClick={() => purgeOne(f)}>
+                  Delete now
                 </Button>
               </span>
             </div>

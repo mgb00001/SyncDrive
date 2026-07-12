@@ -4,7 +4,7 @@
 
 ---
 
-## 0. Implementation Status (2026-07-12)
+## 0. Implementation Status (2026-07-13)
 
 The system described below is **built and live-tested** against real Google Drive accounts. See `README.md` for build/run instructions. Verified end-to-end: OAuth loopback sign-in (6 accounts), initial upload, edit detection, out-of-band tamper re-upload, 30-day holding tank + restore, PC-to-PC/public-link sharing plumbing, and a 30GB overnight stress test that distributed 15+15 files across two accounts via automatic spillover.
 
@@ -21,6 +21,8 @@ The system described below is **built and live-tested** against real Google Driv
 * **Explorer panel**: a Windows-Explorer-style local file browser (`GET /api/browse`) with per-entry status dots (mirroring / paused / pending / conflict / holding tank / not mirrored) and a one-click "⚑ Mirror" flag on unmirrored folders; holding-tank ghosts are listed with one-click restore.
 * **Duplicate self-healing**: Drive folders can hold same-named objects; the engine prefers the tracked file ID and sweeps identical-content strays into the holding-tank folder (never touches different-content objects).
 * **Restore/sync serialization**: restores hold the daemon sync mutex — an unserialized restore raced sync passes and created remote duplicates (found in live testing).
+* **Adoption (state recovery)**: an untracked local file whose name and MD5 match an existing remote file is *adopted* — the tracking row is rebuilt with zero bytes transferred. Same name with different content updates the remote object in place (never duplicates). Recovers cleanly from database loss, reinstalls, or moving to a new machine; proven necessary when a live credential/DB reset orphaned 30GB of uploaded data.
+* **Manual holding-tank purge**: `POST /api/trash/purge` (one file or the whole tank) frees cloud space ahead of the 30-day deadline; UI has per-file "Delete now" and "Empty holding tank" buttons behind confirmation prompts, serialized with sync passes like restore.
 
 ### Known limitations
 
