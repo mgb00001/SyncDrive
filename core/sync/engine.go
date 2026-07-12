@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -162,57 +163,59 @@ func (e *Engine) buildChainTasks(ctx context.Context, chain []db.FolderTarget,
 		}
 	}
 
-	// newFileRelation lazily resolves (once per pass) where new files land.
-	var newRel *db.FolderTarget
-	resolveNewRel := func() (*db.FolderTarget, error) {
-		if newRel != nil {
-			return newRel, nil
-		}
+	accountByRel := map[int64]string{}
+	inChain := map[string]bool{}
+	for _, t := range chain {
+		accountByRel[t.ID] = t.GoogleAccountID
+		inChain[t.GoogleAccountID] = true
+	}
+
+	// assignRelID routes ONE new file: the first chain account whose
+	// remaining headroom (live estimate, decremented per assignment) fits
+	// the file above the free-space reserve. When no chain account fits,
+	// spillover targets are provisioned until one does. Returns 0 when no
+	// connected account has capacity — the file is skipped this pass.
+	provisionExhausted := false
+	assignRelID := func(size int64) int64 {
 		if e.Space == nil {
-			newRel = &chain[0]
-			return newRel, nil
+			return chain[0].ID
 		}
-		inChain := map[string]bool{}
 		for i := range chain {
-			if e.Space.HasSpace(ctx, chain[i].GoogleAccountID) {
-				newRel = &chain[i]
-				return newRel, nil
+			if e.Space.TryReserve(ctx, chain[i].GoogleAccountID, size) {
+				return chain[i].ID
 			}
-			inChain[chain[i].GoogleAccountID] = true
 		}
-		if e.Provision == nil {
-			slog.Warn("all chain accounts below space threshold and no provisioner; using primary",
-				"root", chain[0].LocalRootPath)
-			newRel = &chain[0]
-			return newRel, nil
+		for e.Provision != nil && !provisionExhausted {
+			t, err := e.Provision.ProvisionOverflow(ctx, chain[0], inChain)
+			if err != nil {
+				slog.Warn("cannot provision spillover target", "root", chain[0].LocalRootPath, "err", err)
+				provisionExhausted = true
+				break
+			}
+			chain = append(chain, *t)
+			accountByRel[t.ID] = t.GoogleAccountID
+			inChain[t.GoogleAccountID] = true
+			if _, ok := remoteByRel[t.ID]; !ok {
+				remoteByRel[t.ID] = map[string][]drive.RemoteFile{}
+			}
+			slog.Info("provisioned spillover target",
+				"root", t.LocalRootPath, "account", t.GoogleAccountID, "relation", t.ID)
+			if e.Space.TryReserve(ctx, t.GoogleAccountID, size) {
+				return t.ID
+			}
+			// The fresh account cannot fit this file either; keep going.
 		}
-		t, err := e.Provision.ProvisionOverflow(ctx, chain[0], inChain)
-		if err != nil {
-			return nil, fmt.Errorf("provision overflow target: %w", err)
-		}
-		chain = append(chain, *t)
-		if _, ok := remoteByRel[t.ID]; !ok {
-			remoteByRel[t.ID] = map[string][]drive.RemoteFile{}
-		}
-		slog.Info("provisioned spillover target",
-			"root", t.LocalRootPath, "account", t.GoogleAccountID, "relation", t.ID)
-		newRel = t
-		return newRel, nil
+		return 0
 	}
 
 	var tasks []Task
+
+	// Pass 1: paths already owned by a chain relation (uploads to owned
+	// files never re-route; growth still shrinks the headroom estimate).
 	for p := range paths {
 		relID, owned := ownerByPath[p]
 		if !owned {
-			// New local file: route by available space.
-			if _, isLocal := local[p]; !isLocal {
-				continue
-			}
-			t, err := resolveNewRel()
-			if err != nil {
-				return nil, chain, err
-			}
-			relID = t.ID
+			continue
 		}
 
 		var ls *LocalState
@@ -220,10 +223,8 @@ func (e *Engine) buildChainTasks(ctx context.Context, chain []db.FolderTarget,
 			l := l
 			ls = &l
 		}
-		var bs *BaseState
-		if b, ok := baseByRel[relID][p]; ok {
-			bs = &BaseState{Mtime: b.LocalMtime, Size: b.LocalSize, RemoteID: b.RemoteID, RemoteMD5: b.RemoteMD5}
-		}
+		b := baseByRel[relID][p]
+		bs := &BaseState{Mtime: b.LocalMtime, Size: b.LocalSize, RemoteID: b.RemoteID, RemoteMD5: b.RemoteMD5}
 
 		// Drive folders can hold several objects with the same name. Pick
 		// the one we track (matching base RemoteID) and queue redundant
@@ -239,6 +240,44 @@ func (e *Engine) buildChainTasks(ctx context.Context, chain []db.FolderTarget,
 		}
 
 		action := Merge(ls, rs, bs)
+		if action == ActionNone {
+			continue
+		}
+		if e.Space != nil && ls != nil && ls.Size > bs.Size {
+			e.Space.Consume(accountByRel[relID], ls.Size-bs.Size)
+		}
+		tasks = append(tasks, Task{
+			RelationID:   relID,
+			RelativePath: p,
+			Action:       action,
+			Local:        ls,
+			Remote:       rs,
+		})
+	}
+
+	// Pass 2: brand-new local files, in deterministic order, each routed by
+	// remaining headroom.
+	newPaths := make([]string, 0)
+	for p := range paths {
+		if _, owned := ownerByPath[p]; owned {
+			continue
+		}
+		if _, isLocal := local[p]; isLocal {
+			newPaths = append(newPaths, p)
+		}
+	}
+	sort.Strings(newPaths)
+	for _, p := range newPaths {
+		l := local[p]
+		ls := &l
+		relID := assignRelID(ls.Size)
+		if relID == 0 {
+			slog.Warn("no account has capacity above the free-space reserve; file deferred",
+				"path", p, "size", ls.Size)
+			continue // stays untracked; retried next pass
+		}
+		rs, _ := pickRemote(remoteByRel[relID][p], nil)
+		action := Merge(ls, rs, nil)
 		if action == ActionNone {
 			continue
 		}

@@ -30,8 +30,9 @@ REM Launch minimized; keep a visible-capable window (no hidden shells).
 REM For a production OAuth client add:  -token-lifetime-days 0
 start "SyncDrive Daemon" /min cmd /c ""%ROOT%bin\syncdrived.exe" -secrets "%ROOT%credentials.json" -port 8737 2>"%LOGDIR%\daemon.log""
 
-REM verify it came up
-timeout /t 3 /nobreak >nul
+REM verify it came up (ping-based delay: immune to GNU timeout shadowing
+REM System32\timeout.exe when launched from Git Bash)
+ping -n 4 127.0.0.1 >nul
 curl -s -m 5 "%API%/api/status" >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Daemon did not respond. Check "%LOGDIR%\daemon.log".

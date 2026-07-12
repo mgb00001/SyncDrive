@@ -25,8 +25,18 @@ The system described below is **built and live-tested** against real Google Driv
 ### Known limitations
 
 * fsnotify roots are registered at daemon startup; folders mirrored at runtime rely on the 60s remote poll until restart.
-* Within one sync pass the destination account is chosen once and quota reads are cached ~5 min, so a large burst can overfill an account past the threshold before spilling (self-corrects; failed uploads re-route next pass).
 * Tauri desktop packaging is scaffolded (`/ui/src-tauri`) but requires the Rust toolchain; the UI currently runs via `npm run dev`.
+
+### Space reserve semantics
+
+The free-space threshold is a **hard reserve** guarding headroom for usage
+outside SyncDrive: file routing budgets per file within each sync pass
+(`SpaceManager.TryReserve`), decrementing a live headroom estimate as files
+are assigned and switching accounts — provisioning spillover targets
+mid-pass if needed — the moment the next file would eat into the reserve.
+Growth of already-owned files is also counted (`Consume`), and the pending
+estimate decays as fresh quota reads fold in completed uploads. Files that
+fit nowhere are deferred to the next pass rather than force-placed.
 
 ---
 

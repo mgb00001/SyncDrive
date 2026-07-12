@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +88,69 @@ func TestSpaceManagerFailsOpenAndCaches(t *testing.T) {
 	}
 	if got := infos[0].FreeFraction(); got < 0.92 || got > 0.94 {
 		t.Fatalf("FreeFraction = %v, want ~0.933", got)
+	}
+}
+
+func TestTryReserveHonorsHardReserve(t *testing.T) {
+	store := newSpaceTestStore(t)
+	mustAddAccount(t, store, "a@example.com")
+	// limit 1000, usage 700, threshold 20% → reserve 200 → 100 assignable.
+	m := &SpaceManager{
+		Store:     store,
+		Threshold: 0.20,
+		Sources:   map[string]QuotaSource{"a@example.com": &fakeQuota{limit: 1000, usage: 700}},
+	}
+	ctx := context.Background()
+
+	if !m.TryReserve(ctx, "a@example.com", 60) {
+		t.Fatal("60 bytes must fit (100 available above reserve)")
+	}
+	if m.TryReserve(ctx, "a@example.com", 60) {
+		t.Fatal("second 60 bytes must NOT fit (only 40 left above reserve)")
+	}
+	if !m.TryReserve(ctx, "a@example.com", 40) {
+		t.Fatal("40 bytes must still fit exactly")
+	}
+	if m.TryReserve(ctx, "a@example.com", 1) {
+		t.Fatal("reserve floor must hold: 0 bytes left above reserve")
+	}
+
+	// Unlimited quota is never gated.
+	m.Sources["u@example.com"] = &fakeQuota{limit: 0, usage: 999}
+	mustAddAccount(t, store, "u@example.com")
+	if !m.TryReserve(ctx, "u@example.com", 1<<40) {
+		t.Fatal("unlimited account must always accept")
+	}
+}
+
+func TestTryReserveDecaysPendingAsUploadsComplete(t *testing.T) {
+	store := newSpaceTestStore(t)
+	mustAddAccount(t, store, "a@example.com")
+	fq := &fakeQuota{limit: 1000, usage: 700}
+	m := &SpaceManager{
+		Store:     store,
+		Threshold: 0.20,
+		Sources:   map[string]QuotaSource{"a@example.com": fq},
+		TTL:       time.Nanosecond, // force a fresh quota read every call
+	}
+	ctx := context.Background()
+
+	if !m.TryReserve(ctx, "a@example.com", 100) {
+		t.Fatal("first 100 bytes must fit")
+	}
+	if m.TryReserve(ctx, "a@example.com", 1) {
+		t.Fatal("headroom exhausted by pending reservation")
+	}
+	// The upload completes: Google now reports the grown usage. Pending
+	// must decay by the observed growth, not double-count it.
+	fq.usage = 800
+	if m.TryReserve(ctx, "a@example.com", 1) {
+		t.Fatal("account is at the reserve floor (800 used + 200 reserve = limit)")
+	}
+	// Space is freed outside SyncDrive (user deletes 300 via drive.google.com).
+	fq.usage = 500
+	if !m.TryReserve(ctx, "a@example.com", 250) {
+		t.Fatal("freed space must become assignable again")
 	}
 }
 
@@ -206,6 +270,59 @@ func TestEngineSpillsNewFilesWhenPrimaryAccountIsLow(t *testing.T) {
 	}
 	if prov.calls != 1 {
 		t.Fatalf("provisioner re-invoked on converged chain (%d calls)", prov.calls)
+	}
+}
+
+// TestEngineSplitsBatchAtReserveMidPass is the threshold-overshoot
+// regression test: within ONE pass, a batch of new files must stop landing
+// on an account the moment the next file would eat into the 20% reserve —
+// not after the pass ends.
+func TestEngineSplitsBatchAtReserveMidPass(t *testing.T) {
+	eng, store, opsA, target, root := newEngineFixture(t)
+
+	mustAddAccount(t, store, "acc@example.com")
+	mustAddAccount(t, store, "second@example.com")
+	opsB := newMockOps()
+	eng.Clients["second@example.com"] = opsB
+	// Primary: limit 1000, usage 700, 20% reserve = 200 → 100 bytes
+	// assignable. Two 60-byte files: only the first fits.
+	eng.Space = &SpaceManager{
+		Store:     store,
+		Threshold: 0.20,
+		Sources: map[string]QuotaSource{
+			"acc@example.com":    &fakeQuota{limit: 1000, usage: 700},
+			"second@example.com": &fakeQuota{limit: 1000, usage: 0},
+		},
+	}
+	prov := &fakeProvisioner{store: store, account: "second@example.com"}
+	eng.Provision = prov
+
+	mustWrite(t, filepath.Join(root, "aaa.txt"), strings.Repeat("x", 60))
+	mustWrite(t, filepath.Join(root, "bbb.txt"), strings.Repeat("y", 60))
+
+	if err := eng.SyncChain(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(opsA.uploads) != 1 || opsA.uploads[0] != "aaa.txt" {
+		t.Fatalf("primary uploads = %v, want [aaa.txt] (second file must not breach the reserve)", opsA.uploads)
+	}
+	if len(opsB.uploads) != 1 || opsB.uploads[0] != "bbb.txt" {
+		t.Fatalf("overflow uploads = %v, want [bbb.txt]", opsB.uploads)
+	}
+	if prov.calls != 1 {
+		t.Fatalf("provisioner calls = %d, want 1", prov.calls)
+	}
+	// Both tracked under the right relations.
+	if m, _ := store.GetFile(target.ID, "aaa.txt"); m == nil {
+		t.Fatal("aaa.txt must be tracked under the primary relation")
+	}
+	overflows, _ := store.OverflowsOf(target.ID)
+	if len(overflows) != 1 {
+		t.Fatalf("want exactly one overflow relation, got %d", len(overflows))
+	}
+	if m, _ := store.GetFile(overflows[0].ID, "bbb.txt"); m == nil {
+		t.Fatal("bbb.txt must be tracked under the overflow relation")
 	}
 }
 
