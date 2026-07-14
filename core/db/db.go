@@ -9,6 +9,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -62,10 +63,26 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("migrate (%s): %w", m, err)
 		}
 	}
-	return &Store{DB: sqlDB}, nil
+	s := &Store{DB: sqlDB}
+	s.Checkpoint() // flush any WAL left behind by a prior abrupt termination
+	return s, nil
 }
 
-func (s *Store) Close() error { return s.DB.Close() }
+// Checkpoint flushes the write-ahead log into the main database file so
+// committed writes survive even an abrupt process termination that skips the
+// normal on-close checkpoint. TRUNCATE also resets the WAL so it cannot grow
+// unbounded. Best-effort: a busy checkpoint is not an error worth failing on.
+func (s *Store) Checkpoint() {
+	if _, err := s.DB.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		slog.Warn("wal checkpoint failed", "err", err)
+	}
+}
+
+// Close checkpoints then closes the database.
+func (s *Store) Close() error {
+	s.Checkpoint()
+	return s.DB.Close()
+}
 
 // ---- Models ----
 
@@ -120,6 +137,9 @@ func (s *Store) AddMirroredFolder(f MirroredFolder) error {
 		   versioning_enabled = excluded.versioning_enabled,
 		   holding_period_days = excluded.holding_period_days`,
 		f.LocalRootPath, f.IsPaused, f.VersioningEnabled, f.HoldingPeriodDays)
+	if err == nil {
+		s.Checkpoint() // structural change: flush to main DB so it survives an abrupt exit
+	}
 	return err
 }
 
@@ -160,7 +180,11 @@ func (s *Store) RemoveMirroredFolder(localRoot string) error {
 	if _, err := tx.Exec(`DELETE FROM mirrored_folders WHERE local_root_path = ?`, localRoot); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.Checkpoint() // structural change: flush to main DB so it survives an abrupt exit
+	return nil
 }
 
 // ---- Folder targets ----
@@ -173,7 +197,12 @@ func (s *Store) AddFolderTarget(t FolderTarget) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	s.Checkpoint() // structural change: flush to main DB so it survives an abrupt exit
+	return id, nil
 }
 
 const targetCols = `id, local_root_path, google_account_id, remote_parent_folder_id,
@@ -372,6 +401,9 @@ func (s *Store) AddAccount(email, displayName string) error {
 		`INSERT INTO accounts (email, display_name) VALUES (?, ?)
 		 ON CONFLICT(email) DO UPDATE SET display_name = excluded.display_name`,
 		email, displayName)
+	if err == nil {
+		s.Checkpoint() // structural change: flush to main DB so it survives an abrupt exit
+	}
 	return err
 }
 

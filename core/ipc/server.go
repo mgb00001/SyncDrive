@@ -48,20 +48,25 @@ type DriveFull interface {
 	share.PermissionOps
 }
 
-// Server is the loopback HTTP API.
+// Server is the loopback HTTP API, optionally also serving the built web UI.
 type Server struct {
 	daemon Daemon
+	uiDir  string // directory with the built frontend (ui/dist); "" = API only
 }
 
-func NewServer(d Daemon) *Server { return &Server{daemon: d} }
+func NewServer(d Daemon, uiDir string) *Server { return &Server{daemon: d, uiDir: uiDir} }
 
-// Listen binds to 127.0.0.1:port (0 = ephemeral) and serves until ctx ends.
-// The bound address is returned so the UI can be told where to connect.
+// Listen binds to 127.0.0.1:port (0 = ephemeral) — and, best-effort, to
+// [::1] on the same port, because Windows browsers resolve "localhost" to
+// IPv6 first and would otherwise get connection-refused. Serves until ctx
+// ends; the IPv4 address is returned.
 func (s *Server) Listen(ctx context.Context, port int) (string, error) {
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	ln4, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return "", err
 	}
+	boundPort := ln4.Addr().(*net.TCPAddr).Port
+
 	srv := &http.Server{Handler: s.routes(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -70,11 +75,20 @@ func (s *Server) Listen(ctx context.Context, port int) (string, error) {
 		srv.Shutdown(shutdownCtx)
 	}()
 	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			slog.Error("ipc server", "err", err)
+		if err := srv.Serve(ln4); err != nil && err != http.ErrServerClosed {
+			slog.Error("ipc server (ipv4)", "err", err)
 		}
 	}()
-	return ln.Addr().String(), nil
+	if ln6, err := net.Listen("tcp", fmt.Sprintf("[::1]:%d", boundPort)); err == nil {
+		go func() {
+			if err := srv.Serve(ln6); err != nil && err != http.ErrServerClosed {
+				slog.Error("ipc server (ipv6)", "err", err)
+			}
+		}()
+	} else {
+		slog.Debug("ipv6 loopback unavailable; localhost may require 127.0.0.1", "err", err)
+	}
+	return ln4.Addr().String(), nil
 }
 
 func (s *Server) routes() http.Handler {
@@ -93,6 +107,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/share/link", s.handleShareLink)
 	mux.HandleFunc("GET /api/browse", s.handleBrowse)
 	mux.HandleFunc("POST /api/sync", s.handleTriggerSync)
+	// Serve the built web UI at "/" so the app is reachable directly on the
+	// daemon's port with no separate frontend process ("/api/..." patterns
+	// above are more specific and keep priority).
+	if s.uiDir != "" {
+		mux.Handle("GET /", http.FileServer(http.Dir(s.uiDir)))
+	}
 	return corsMiddleware(mux)
 }
 

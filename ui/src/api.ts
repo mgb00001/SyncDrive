@@ -1,5 +1,7 @@
-// Thin client for the syncdrived loopback JSON API.
-const BASE = "http://127.0.0.1:8737";
+// Thin client for the syncdrived loopback JSON API. When the page is served
+// by the daemon itself (default port 8737) use same-origin requests; the
+// Vite dev server and the Tauri webview need the absolute address.
+const BASE = window.location.port === "8737" ? "" : "http://127.0.0.1:8737";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

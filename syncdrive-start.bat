@@ -26,6 +26,10 @@ if not exist "%ROOT%credentials.json" (
 )
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 
+REM Roll the previous log aside (keep one prior run) so a restart never
+REM destroys the evidence from the session before it.
+if exist "%LOGDIR%\daemon.log" move /y "%LOGDIR%\daemon.log" "%LOGDIR%\daemon.prev.log" >nul
+
 REM Launch minimized; keep a visible-capable window (no hidden shells).
 REM -token-lifetime-days 0: production OAuth client, no 7-day token expiry
 REM (set back to 7 if you ever return to a Testing-mode client).
@@ -39,5 +43,7 @@ if errorlevel 1 (
     echo [ERROR] Daemon did not respond. Check "%LOGDIR%\daemon.log".
     exit /b 1
 )
-echo SyncDrive daemon started.  API: %API%   Log: %LOGDIR%\daemon.log
+echo SyncDrive daemon started.
+echo   App+API: %API%  (also http://localhost:8737)
+echo   Log:     %LOGDIR%\daemon.log
 endlocal

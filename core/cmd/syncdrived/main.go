@@ -38,6 +38,7 @@ func main() {
 			"minimum free-space fraction per account; below it new uploads spill to the next account")
 		tokenDays = flag.Int("token-lifetime-days", 7,
 			"refresh-token lifetime for expiry warnings (7 for Testing-mode OAuth clients; 0 disables warnings for published/production clients)")
+		uiDir = flag.String("ui", "", "directory of the built web UI to serve at / (default: auto-detect ui/dist near the executable)")
 	)
 	flag.Parse()
 
@@ -45,13 +46,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	if err := run(ctx, *dataDir, *secretsPath, *port, *workers, *pollEvery, *spaceMin, *tokenDays); err != nil {
+	if err := run(ctx, *dataDir, *secretsPath, *port, *workers, *pollEvery, *spaceMin, *tokenDays, *uiDir); err != nil {
 		slog.Error("daemon exited", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, dataDir, secretsPath string, port, workers int, pollEvery time.Duration, spaceMin float64, tokenDays int) error {
+func run(ctx context.Context, dataDir, secretsPath string, port, workers int, pollEvery time.Duration, spaceMin float64, tokenDays int, uiDir string) error {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
@@ -125,12 +126,15 @@ func run(ctx context.Context, dataDir, secretsPath string, port, workers int, po
 	}
 	go w.Run(ctx)
 
-	// Loopback control API for the UI.
-	addr, err := ipc.NewServer(d).Listen(ctx, port)
+	// Loopback control API, plus the web UI when a built frontend is found.
+	if uiDir == "" {
+		uiDir = detectUIDir()
+	}
+	addr, err := ipc.NewServer(d, uiDir).Listen(ctx, port)
 	if err != nil {
 		return err
 	}
-	slog.Info("SyncDrive daemon ready", "api", "http://"+addr, "data", dataDir)
+	slog.Info("SyncDrive daemon ready", "api", "http://"+addr, "data", dataDir, "ui", uiDir)
 
 	// Main loop: local events, periodic remote polls, and explicit sync
 	// requests all funnel into full reconciliation passes.
@@ -448,4 +452,25 @@ func defaultDataDir() string {
 		base = "."
 	}
 	return filepath.Join(base, "SyncDrive")
+}
+
+// detectUIDir finds the built frontend near the executable (repo layout:
+// bin/syncdrived.exe next to ui/dist) or the working directory. Returns ""
+// when absent — the daemon then serves the API only.
+func detectUIDir() string {
+	var candidates []string
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "..", "ui", "dist"))
+	}
+	candidates = append(candidates, filepath.Join("ui", "dist"))
+	for _, c := range candidates {
+		if fi, err := os.Stat(filepath.Join(c, "index.html")); err == nil && !fi.IsDir() {
+			abs, err := filepath.Abs(c)
+			if err == nil {
+				return abs
+			}
+			return c
+		}
+	}
+	return ""
 }
