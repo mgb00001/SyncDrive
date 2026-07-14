@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, MirroredFolder } from "../api";
 import { Badge, Button, Card, CardHeader, Input } from "../components/ui";
+import MirrorWarning, { useMirrorGuard } from "../components/MirrorWarning";
 
 export default function Folders({ accounts }: { accounts: string[] }) {
   const [folders, setFolders] = useState<MirroredFolder[]>([]);
@@ -15,15 +16,18 @@ export default function Folders({ accounts }: { accounts: string[] }) {
     load();
   }, []);
 
-  const add = async () => {
-    setError("");
-    try {
-      await api.addFolder(newPath, newAccount || accounts[0] || "", "SyncDrive", 30);
+  const guard = useMirrorGuard(
+    () => {
       setNewPath("");
       load();
-    } catch (e) {
-      setError(String(e));
-    }
+    },
+    (e) => setError(e),
+  );
+
+  const add = () => {
+    setError("");
+    const name = newPath.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || "SyncDrive";
+    guard.requestMirror(newPath, newAccount || accounts[0] || "", name, 30);
   };
 
   return (
@@ -48,11 +52,15 @@ export default function Folders({ accounts }: { accounts: string[] }) {
               </option>
             ))}
           </select>
-          <Button onClick={add} disabled={!newPath || accounts.length === 0}>
-            Mirror it
+          <Button onClick={add} disabled={!newPath || accounts.length === 0 || guard.busy}>
+            {guard.busy ? "Checking…" : "Mirror it"}
           </Button>
         </div>
       </Card>
+
+      {guard.pending && (
+        <MirrorWarning pending={guard.pending} busy={guard.busy} onConfirm={guard.confirm} onCancel={guard.cancel} />
+      )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
       {link && (

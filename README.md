@@ -18,6 +18,9 @@ multi-account spillover stress test.
 - **Adoption** — after a database loss, reinstall, or machine move, local
   files that byte-match existing remote files (MD5) are re-linked with zero
   re-uploading.
+- **Sensitive-data preflight** — before mirroring, SyncDrive scans the folder
+  for credentials, private keys, system trees, and cloud-synced dirs, and
+  warns (with a chance to cancel) before any of it reaches the cloud.
 - **Explorer panel** — browse your local drives with per-file sync status
   dots and one-click mirroring of any folder.
 - **Credential expiry warnings** — Testing-mode OAuth tokens expire after
@@ -50,6 +53,7 @@ multi-account spillover stress test.
 | `core/drive` | Drive v3 wrapper: chunked resumable uploads (8 MB chunks), holding-tank moves, change polling, storage quota, sharing |
 | `core/watcher` | Recursive fsnotify with debouncing and Windows long-path handling |
 | `core/sync` | 3-way merge (md5-based), spillover space manager, channel-fed worker pool, duplicate self-healing, incoming-share extension blocking |
+| `core/sensitive` | Pre-mirror scan for secrets, keys, system trees, and cloud-synced dirs |
 | `core/retention` | Hourly holding-tank sweep (default 30-day period, per-folder configurable) + restore |
 | `core/share` | PC-to-PC (`writer` permission) and public-link (`anyone`/`reader`) sharing |
 | `core/ipc` | Loopback JSON API consumed by the UI (status, folders, trash, accounts, sharing, filesystem browse) |

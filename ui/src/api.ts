@@ -72,9 +72,24 @@ export interface BrowseResponse {
   entries: BrowseEntry[];
 }
 
+export interface SensitiveFinding {
+  path: string;
+  category: "secret" | "secret-dir" | "system-dir" | "cloud-synced" | "syncdrive";
+  severity: "high" | "medium" | "low";
+  reason: string;
+}
+
+export interface PreflightResult {
+  findings: SensitiveFinding[];
+  files_scanned: number;
+  truncated: boolean;
+}
+
 export const api = {
   status: () => req<Status>("/api/status"),
   folders: () => req<MirroredFolder[]>("/api/folders"),
+  preflight: (local_root_path: string) =>
+    req<PreflightResult>("/api/mirror/preflight", { method: "POST", body: JSON.stringify({ local_root_path }) }),
   addFolder: (local_root_path: string, account: string, remote_folder_name: string, holding_period_days: number) =>
     req("/api/folders", { method: "POST", body: JSON.stringify({ local_root_path, account, remote_folder_name, holding_period_days }) }),
   pauseFolder: (local_root_path: string, paused: boolean) =>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, BrowseEntry, BrowseResponse } from "../api";
 import { Badge, Button, Card, CardHeader } from "../components/ui";
+import MirrorWarning, { useMirrorGuard } from "../components/MirrorWarning";
 
 // Dot colour per sync status.
 const DOT: Record<string, { cls: string; label: string }> = {
@@ -38,25 +39,21 @@ export default function Explorer({ accounts }: { accounts: string[] }) {
     load();
   }, []);
 
-  const mirrorFolder = async (entry: BrowseEntry) => {
+  const guard = useMirrorGuard(
+    () => load(view?.path),
+    (e) => setError(e),
+  );
+
+  const mirrorFolder = (entry: BrowseEntry) => {
     const account = accounts[0];
     if (!account) {
       setError("Connect a Google account first (Accounts tab).");
       return;
     }
+    setError("");
     const target = entry.is_dir ? entry.path : entry.path.slice(0, entry.path.lastIndexOf("/"));
     const name = target.split("/").pop() || "SyncDrive";
-    if (!confirm(`Mirror "${target}" to ${account} as Drive folder "${name}"?`)) return;
-    setBusyPath(entry.path);
-    try {
-      await api.addFolder(target, account, name, 30);
-      await api.triggerSync();
-      await load(view?.path);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusyPath("");
-    }
+    guard.requestMirror(target, account, name, 30);
   };
 
   const restoreGhost = async (entry: BrowseEntry) => {
@@ -153,11 +150,11 @@ export default function Explorer({ accounts }: { accounts: string[] }) {
                       <Button
                         variant="outline"
                         className="px-2 py-0.5 text-xs"
-                        disabled={busyPath === e.path}
+                        disabled={guard.busy}
                         onClick={() => mirrorFolder(e)}
                         title={e.is_dir ? "Start mirroring this folder" : "Mirror this file's folder"}
                       >
-                        {busyPath === e.path ? "…" : "⚑ Mirror"}
+                        {guard.busy ? "…" : "⚑ Mirror"}
                       </Button>
                     )}
                     {e.ghost && (
@@ -181,6 +178,10 @@ export default function Explorer({ accounts }: { accounts: string[] }) {
           </div>
         </div>
       </Card>
+
+      {guard.pending && (
+        <MirrorWarning pending={guard.pending} busy={guard.busy} onConfirm={guard.confirm} onCancel={guard.cancel} />
+      )}
     </div>
   );
 }

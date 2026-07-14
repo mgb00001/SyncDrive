@@ -23,6 +23,7 @@ import (
 	"syncdrive/core/drive"
 	"syncdrive/core/ipc"
 	"syncdrive/core/retention"
+	"syncdrive/core/sensitive"
 	syncengine "syncdrive/core/sync"
 	"syncdrive/core/watcher"
 )
@@ -71,12 +72,14 @@ func run(ctx context.Context, dataDir, secretsPath string, port, workers int, po
 	}
 
 	d := &daemon{
-		ctx:       ctx,
-		store:     store,
-		oauthCfg:  oauthCfg,
-		clients:   map[string]*drive.Client{},
-		syncReq:   make(chan struct{}, 1),
-		tokenDays: tokenDays,
+		ctx:         ctx,
+		store:       store,
+		oauthCfg:    oauthCfg,
+		clients:     map[string]*drive.Client{},
+		syncReq:     make(chan struct{}, 1),
+		tokenDays:   tokenDays,
+		secretsPath: secretsPath,
+		dataDir:     dataDir,
 	}
 
 	// Reconnect previously authenticated accounts from the credential vault.
@@ -159,13 +162,15 @@ func run(ctx context.Context, dataDir, secretsPath string, port, workers int, po
 
 // daemon wires the subsystems together and implements ipc.Daemon.
 type daemon struct {
-	ctx       context.Context
-	store     *db.Store
-	oauthCfg  *oauth2.Config
-	engine    *syncengine.Engine
-	space     *syncengine.SpaceManager
-	syncReq   chan struct{}
-	tokenDays int
+	ctx         context.Context
+	store       *db.Store
+	oauthCfg    *oauth2.Config
+	engine      *syncengine.Engine
+	space       *syncengine.SpaceManager
+	syncReq     chan struct{}
+	tokenDays   int
+	secretsPath string
+	dataDir     string
 
 	// syncMu serializes reconciliation passes with restore operations: a
 	// pass running mid-restore would see the restored local file as
@@ -288,6 +293,17 @@ func (d *daemon) Quotas(ctx context.Context) ([]db.AccountInfo, error) {
 // TokenLifetimeDays reports the configured refresh-token lifetime (0 =
 // production client, no expiry warnings).
 func (d *daemon) TokenLifetimeDays() int { return d.tokenDays }
+
+// PreflightMirror scans a candidate mirror root for sensitive data, always
+// flagging the daemon's own OAuth secrets file and database directory if they
+// fall inside it.
+func (d *daemon) PreflightMirror(localRoot string) sensitive.Result {
+	known := []string{d.dataDir}
+	if d.secretsPath != "" {
+		known = append(known, d.secretsPath)
+	}
+	return sensitive.Scan(localRoot, sensitive.Options{KnownSecretPaths: known})
+}
 
 func (d *daemon) connectAccount(email string) error {
 	ts, err := auth.TokenSource(d.ctx, d.oauthCfg, email)

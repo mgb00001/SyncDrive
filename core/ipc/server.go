@@ -13,6 +13,7 @@ import (
 
 	"syncdrive/core/db"
 	"syncdrive/core/retention"
+	"syncdrive/core/sensitive"
 	"syncdrive/core/share"
 	syncengine "syncdrive/core/sync"
 )
@@ -37,6 +38,9 @@ type Daemon interface {
 	// TokenLifetimeDays is the refresh-token lifetime used for expiry
 	// warnings; 0 disables them (production OAuth client).
 	TokenLifetimeDays() int
+	// PreflightMirror scans a candidate local root for sensitive data the
+	// user probably should not push to the cloud.
+	PreflightMirror(localRoot string) sensitive.Result
 	// TriggerSync requests an immediate reconciliation pass for all relations.
 	TriggerSync()
 }
@@ -96,6 +100,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/folders", s.handleListFolders)
 	mux.HandleFunc("POST /api/folders", s.handleAddFolder)
+	mux.HandleFunc("POST /api/mirror/preflight", s.handlePreflight)
 	mux.HandleFunc("POST /api/folders/pause", s.handlePauseFolder)
 	mux.HandleFunc("DELETE /api/folders", s.handleRemoveFolder)
 	mux.HandleFunc("GET /api/trash", s.handleListTrash)
@@ -170,6 +175,20 @@ func (s *Server) handleListFolders(w http.ResponseWriter, r *http.Request) {
 		out = append(out, folderView{MirroredFolder: f, Targets: targets})
 	}
 	writeJSON(w, out)
+}
+
+func (s *Server) handlePreflight(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		LocalRootPath string `json:"local_root_path"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.LocalRootPath == "" {
+		http.Error(w, "local_root_path required", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, s.daemon.PreflightMirror(req.LocalRootPath))
 }
 
 func (s *Server) handleAddFolder(w http.ResponseWriter, r *http.Request) {

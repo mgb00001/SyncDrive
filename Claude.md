@@ -23,6 +23,7 @@ The system described below is **built and live-tested** against real Google Driv
 * **Restore/sync serialization**: restores hold the daemon sync mutex — an unserialized restore raced sync passes and created remote duplicates (found in live testing).
 * **Adoption (state recovery)**: an untracked local file whose name and MD5 match an existing remote file is *adopted* — the tracking row is rebuilt with zero bytes transferred. Same name with different content updates the remote object in place (never duplicates). Recovers cleanly from database loss, reinstalls, or moving to a new machine; proven necessary when a live credential/DB reset orphaned 30GB of uploaded data.
 * **Manual holding-tank purge**: `POST /api/trash/purge` (one file or the whole tank) frees cloud space ahead of the 30-day deadline; UI has per-file "Delete now" and "Empty holding tank" buttons behind confirmation prompts, serialized with sync passes like restore.
+* **Sensitive-data preflight**: before a mirror is established, `POST /api/mirror/preflight` scans the candidate root (`core/sensitive`) for credential/key files, credential dirs (`.ssh`, `.aws`, …), OS/system trees (`AppData`, `node_modules`, …), already-cloud-synced dirs (`OneDrive`, …), and SyncDrive's own secrets/DB. Findings raise a warning modal in both the Folders and Explorer mirror flows with Cancel / "Mirror anyway"; a clean folder mirrors with no prompt.
 
 ### Known limitations
 
