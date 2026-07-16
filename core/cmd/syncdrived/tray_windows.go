@@ -78,13 +78,15 @@ func openURL(url string) {
 	}
 }
 
-// openLog reveals the log file in the default text viewer.
+// openLog shows the log file. It opens Notepad directly (rather than "cmd /c
+// start", which flashes a console window and does nothing when .log has no
+// file association) so the log reliably appears with no terminal flash.
 func openLog(path string) {
 	if path == "" {
 		slog.Warn("no log file configured; start the daemon with -log <path>")
 		return
 	}
-	if err := exec.Command("cmd", "/c", "start", "", path).Start(); err != nil {
+	if err := exec.Command("notepad.exe", path).Start(); err != nil {
 		slog.Warn("open log failed", "err", err)
 	}
 }
