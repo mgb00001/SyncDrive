@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -39,18 +40,54 @@ func main() {
 			"minimum free-space fraction per account; below it new uploads spill to the next account")
 		tokenDays = flag.Int("token-lifetime-days", 7,
 			"refresh-token lifetime for expiry warnings (7 for Testing-mode OAuth clients; 0 disables warnings for published/production clients)")
-		uiDir = flag.String("ui", "", "directory of the built web UI to serve at / (default: auto-detect ui/dist near the executable)")
+		uiDir   = flag.String("ui", "", "directory of the built web UI to serve at / (default: auto-detect ui/dist near the executable)")
+		logPath = flag.String("log", "", "also write logs to this file (needed for the tray 'Show logs' menu when there is no console)")
+		tray    = flag.Bool("tray", false, "run with a system-tray icon instead of a console window (Windows)")
 	)
 	flag.Parse()
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	// Logging: stderr, plus a file when -log is set. In the tray build there
+	// is no console, so writes to os.Stderr fail; wrap it so a failed stderr
+	// write is swallowed instead of short-circuiting io.MultiWriter and
+	// starving the file (that left daemon.log empty in tray mode).
+	writers := []io.Writer{ignoreErr{os.Stderr}}
+	if *logPath != "" {
+		if lf, err := os.OpenFile(*logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			writers = append(writers, lf)
+			defer lf.Close()
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(writers...), nil)))
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	if err := run(ctx, *dataDir, *secretsPath, *port, *workers, *pollEvery, *spaceMin, *tokenDays, *uiDir); err != nil {
+	start := func(c context.Context) error {
+		return run(c, *dataDir, *secretsPath, *port, *workers, *pollEvery, *spaceMin, *tokenDays, *uiDir)
+	}
+
+	// Tray mode (Windows) hands the main goroutine to the systray loop and
+	// runs the daemon in the background; elsewhere it falls back to a plain
+	// blocking run.
+	if *tray {
+		runTray(ctx, stop, start, trayInfo{URL: fmt.Sprintf("http://localhost:%d", *port), LogPath: *logPath})
+		return
+	}
+
+	if err := start(ctx); err != nil {
 		slog.Error("daemon exited", "err", err)
 		os.Exit(1)
 	}
+}
+
+// ignoreErr wraps a writer so a failing write (e.g. the invalid stderr handle
+// of a Windows GUI process) reports success, letting io.MultiWriter continue
+// to the log file.
+type ignoreErr struct{ w io.Writer }
+
+func (i ignoreErr) Write(p []byte) (int, error) {
+	i.w.Write(p)
+	return len(p), nil
 }
 
 func run(ctx context.Context, dataDir, secretsPath string, port, workers int, pollEvery time.Duration, spaceMin float64, tokenDays int, uiDir string) error {

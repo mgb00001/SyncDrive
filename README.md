@@ -60,7 +60,8 @@ multi-account spillover stress test.
 | `core/cmd/syncdrived` | Daemon entrypoint |
 | `core/cmd/dbdump`, `core/cmd/drivels`, `core/cmd/driverm` | Diagnostic tools: dump sync state / raw-list a Drive folder / permanently delete a Drive object |
 | `ui` | Tauri 2 + React + Tailwind frontend (daemon bundled as sidecar) |
-| `syncdrive-start.bat` / `syncdrive-stop.bat` | Windows service-style start/stop scripts |
+| `syncdrive-tray.bat` | Launch the windowless system-tray app (Open UI / Show logs / Shut down) |
+| `syncdrive-start.bat` / `syncdrive-stop.bat` | Windows console start/stop scripts (debugging) |
 | `stress-test.bat` | 30 x 1GB overnight spillover stress test |
 
 ## Sync policy — "Local Is Law"
@@ -99,6 +100,8 @@ stress test: 15 files landed on the primary account, 15 spilled to the next.
 | `-poll` | `60s` | remote change-poll interval |
 | `-space-threshold` | `0.20` | minimum free-space fraction before spillover |
 | `-token-lifetime-days` | `7` | refresh-token lifetime for expiry warnings; `0` disables (production OAuth client) |
+| `-tray` | off | run with a system-tray icon instead of a console window (Windows) |
+| `-log` | — | also write logs to this file (used by the tray "Show logs" menu) |
 
 ## Building
 
@@ -135,8 +138,15 @@ go build -o ui/src-tauri/binaries/syncdrived-x86_64-pc-windows-msvc.exe ./core/c
 
 ## Running
 
-On Windows, use the service scripts (expects `credentials.json` in the
-project root and the daemon built at `bin\syncdrived.exe`):
+On Windows, run it from the **system tray** (no terminal window) — the tray
+icon's menu opens the UI, shows the log, and shuts the daemon down:
+
+```bat
+syncdrive-tray.bat    REM lives in the system tray; put a shortcut in shell:startup to auto-run at login
+```
+
+Or use the console service scripts (handy for debugging; expects
+`credentials.json` in the project root and the daemon at `bin\syncdrived.exe`):
 
 ```bat
 syncdrive-start.bat   REM starts minimized, logs to %LOCALAPPDATA%\SyncDrive\daemon.log

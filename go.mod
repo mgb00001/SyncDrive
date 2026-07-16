@@ -3,6 +3,7 @@ module syncdrive
 go 1.22
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/zalando/go-keyring v0.2.4
 	golang.org/x/oauth2 v0.20.0
